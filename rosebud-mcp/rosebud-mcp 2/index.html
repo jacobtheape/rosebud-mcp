@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rosebud MCP — API Documentation</title>
+<style>
+  :root { --rose: #b03a5b; --ink: #23201d; --muted: #6b6259; --line: #e8e2d9; --bg: #fdfbf8; --card: #ffffff; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); margin: 0; line-height: 1.6; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+  header { border-bottom: 3px solid var(--rose); padding-bottom: 24px; margin-bottom: 32px; }
+  h1 { margin: 0 0 8px; font-size: 2rem; }
+  h1 .flower { color: var(--rose); }
+  .tagline { color: var(--muted); font-size: 1.1rem; margin: 0; }
+  h2 { margin-top: 40px; font-size: 1.35rem; border-bottom: 1px solid var(--line); padding-bottom: 8px; }
+  h3 { margin-top: 28px; font-size: 1.05rem; }
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: .95rem; }
+  th, td { text-align: left; padding: 10px 12px; border: 1px solid var(--line); vertical-align: top; }
+  th { background: #f7f2ec; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88em; background: #f4efe8; padding: 2px 6px; border-radius: 4px; }
+  pre { background: #2b2622; color: #f2ece4; padding: 18px; border-radius: 8px; overflow-x: auto; font-size: .85rem; line-height: 1.55; }
+  pre code { background: none; padding: 0; color: inherit; }
+  .note { background: #fff8ec; border-left: 4px solid #d9a441; padding: 12px 16px; margin: 20px 0; border-radius: 0 8px 8px 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; margin: 16px 0; }
+  .param { margin: 6px 0; }
+  .param code { font-weight: 600; }
+  .req { color: var(--rose); font-weight: 600; font-size: .8em; }
+  footer { margin-top: 56px; color: var(--muted); font-size: .85rem; border-top: 1px solid var(--line); padding-top: 16px; }
+  a { color: var(--rose); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1><span class="flower">❀</span> Rosebud MCP — API Documentation</h1>
+  <p class="tagline">US flower delivery as Model Context Protocol tools, for the Muse Platform connector program.</p>
+</header>
+
+<p>The customer only ever talks to the agent. The agent uses these tools; Rosebud's backend runs the florist checkout — a headless browser at a national florist in live mode, fully simulated in the default fake mode. No customer ever touches a florist website.</p>
+
+<h2>Connection</h2>
+<table>
+  <tr><th>Field</th><th>Value</th></tr>
+  <tr><td>Connection type</td><td><strong>Existing MCP</strong> (streamable HTTP)</td></tr>
+  <tr><td>MCP endpoint</td><td><code>POST https://&lt;your-host&gt;/mcp</code></td></tr>
+  <tr><td>Health check</td><td><code>GET https://&lt;your-host&gt;/health</code> (no auth)</td></tr>
+  <tr><td>Authentication</td><td><strong>API keys</strong> — <code>Authorization: Bearer &lt;ROSEBUD_API_KEY&gt;</code>. <code>/mcp</code> returns 401 without a valid key.</td></tr>
+  <tr><td>Access requirements</td><td>US delivery addresses only. Every purchase requires the end user's explicit approval of the exact quote before <code>purchase</code> is called; spend can never be pre-authorized, batched, or automated.</td></tr>
+</table>
+
+<h2>Tools</h2>
+<table>
+  <tr><th>Tool</th><th>Description</th></tr>
+  <tr><td><code>search_arrangements</code></td><td>Bouquets for an occasion within the customer's <em>total</em> budget (flowers + delivery + tax + the $2.99 Rosebud fee).</td></tr>
+  <tr><td><code>get_quote</code></td><td>Locks the exact total with line items. Quote expires after 30 minutes and is single-use.</td></tr>
+  <tr><td><code>purchase</code></td><td>Runs the florist checkout. <strong>Refuses unless <code>user_confirmed=true</code></strong> and the quote is valid, unexpired, and unused. Refuses to charge if the live total differs from the approved quote.</td></tr>
+  <tr><td><code>order_status</code></td><td>Order details and status.</td></tr>
+  <tr><td><code>cancel_order</code></td><td>Cancels an order. Requires <code>user_confirmed=true</code>.</td></tr>
+  <tr><td><code>delivery_confirmation</code></td><td>Delivery proof details when the florist provides them.</td></tr>
+</table>
+
+<h3><code>search_arrangements</code></h3>
+<div class="card">
+  <div class="param"><code>occasion</code> <span class="req">required</span> — birthday, anniversary, sympathy, get_well, congratulations, love</div>
+  <div class="param"><code>budget_max</code> <span class="req">required</span> — the most the customer will spend <em>total</em>, including delivery, tax, and the $2.99 fee</div>
+  <div class="param"><code>delivery_zip</code> <span class="req">required</span> — US ZIP (validated; rejects malformed and impossible ZIPs)</div>
+  <div class="param"><code>delivery_date</code> <span class="req">required</span> — YYYY-MM-DD</div>
+  <p style="margin-bottom:0">Returns options with <code>arrangement_id</code>, name, florist, product price, and description. Every returned option's estimated all-in cost is at or under <code>budget_max</code> — the budget is enforced against the total, not the flower price alone.</p>
+</div>
+
+<h3><code>get_quote</code></h3>
+<div class="card">
+  <div class="param"><code>arrangement_id</code>, <code>occasion</code> <span class="req">required</span></div>
+  <div class="param"><code>first_name</code>, <code>last_name</code>, <code>address1</code>, <code>city</code>, <code>state</code>, <code>zip</code> <span class="req">required</span> — recipient</div>
+  <div class="param"><code>delivery_date</code>, <code>card_message</code>, <code>sender_name</code> <span class="req">required</span></div>
+  <div class="param"><code>phone</code>, <code>special_instructions</code> — optional (required by some florists)</div>
+  <p style="margin-bottom:0">Returns a <code>quote_id</code> plus line items — product, delivery, estimated tax, and the <strong>$2.99 Rosebud service fee as its own line item</strong> — and the exact total. The agent must present every line to the user and get explicit approval of that exact total before calling <code>purchase</code>.</p>
+</div>
+
+<h3><code>purchase</code></h3>
+<div class="card">
+  <div class="param"><code>quote_id</code> <span class="req">required</span> — unexpired, unused quote from <code>get_quote</code></div>
+  <div class="param"><code>user_confirmed</code> <span class="req">required</span> — must be <code>true</code>; the agent's attestation that the user approved this exact quote</div>
+  <div class="param"><code>platform_payment_ref</code> <span class="req">required</span> — the platform's proof that the customer paid Rosebud the exact approved total (a Stripe payment intent id in live mode). Single-use; reused refs are refused.</div>
+  <div class="param"><code>payment_amount</code> <span class="req">required</span> — what the platform collected; must equal the quote total exactly or the purchase is refused.</div>
+  <p style="margin-bottom:0">Rosebud is the merchant of record: the customer pays Rosebud, and Rosebud pays the florist the <em>merchant total</em> (product + delivery + tax, without the $2.99 fee) using its own business payment method. Returns the order id, <code>charged_to_customer</code>, <code>paid_to_florist</code>, and the fee. Any drift between the florist's live merchant total and the approved amount refuses the purchase and refunds the customer payment. No customer card data is accepted or handled.</p>
+</div>
+
+<h3><code>order_status</code> · <code>cancel_order</code> · <code>delivery_confirmation</code></h3>
+<div class="card">
+  <div class="param"><code>order_status(order_id)</code> — order details and status</div>
+  <div class="param"><code>cancel_order(order_id, user_confirmed=true)</code> — refuses without explicit user approval; a successful cancellation refunds the customer payment</div>
+  <div class="param"><code>delivery_confirmation(order_id)</code> — delivery proof details when the florist provides them</div>
+</div>
+
+<h2>Money flow (merchant of record)</h2>
+<pre><code>1. Customer approves the exact quote total (flowers + delivery
+   + tax + the $2.99 Rosebud service fee).
+
+2. The platform charges the customer that exact total and credits
+   Rosebud's Stripe account, returning a platform_payment_ref.
+
+3. purchase() verifies the payment ref (captured, exact amount,
+   single-use), then Rosebud pays the florist the merchant total
+   (WITHOUT the $2.99 fee) with Rosebud's own business payment
+   method. The $2.99 stays with Rosebud as margin.
+
+4. If the florist's live total drifts from the approved merchant
+   total, the checkout refuses BEFORE charging and the customer
+   payment is refunded. cancel_order refunds the customer too.
+
+Raw customer card numbers never touch Rosebud's servers.</code></pre>
+
+<h2>Ordering flow</h2>
+<pre><code>1. Collect: recipient first + last name, full US street address,
+   city, state, ZIP, delivery date, total budget (incl. the fee),
+   card note, occasion, sender name (+ phone / instructions
+   when the florist requires them)
+
+2. search_arrangements(occasion, budget_max, delivery_zip,
+   delivery_date) → options guaranteed within the total budget
+
+3. get_quote for the chosen option → exact total with every
+   line item, including the $2.99 Rosebud service fee.
+   Present it all to the user and get explicit approval.
+
+4. Platform charges the customer the exact approved total into
+   Rosebud's account → platform_payment_ref.
+   purchase(quote_id, user_confirmed=true, platform_payment_ref,
+   payment_amount) → order id. Refused without approval, on
+   expired/used/unknown quotes, on unverified or reused payment refs,
+   on amount mismatch, or if the florist's live total drifts
+   (customer payment is refunded on drift).
+
+5. Track with order_status / delivery_confirmation until delivered.
+   cancel_order needs its own explicit user approval and refunds
+   the customer payment.</code></pre>
+
+<h2>Safeguards</h2>
+<ul>
+  <li><strong>Authentication:</strong> bearer API key on every <code>/mcp</code> call; <code>/health</code> is the only public route.</li>
+  <li><strong>Approval-gated spend:</strong> <code>purchase</code> and <code>cancel_order</code> refuse unless <code>user_confirmed=true</code>. Approval covers one exact quote and can never be pre-granted, batched, or automated.</li>
+  <li><strong>Exact-total quotes:</strong> 30-minute TTL, single-use; unknown or reused quotes are rejected. The charged total always equals the approved quote total.</li>
+  <li><strong>Total-drift refusal:</strong> if the florist's live merchant total differs from the approved amount, the purchase is refused before any charge, and the customer payment is refunded.</li>
+  <li><strong>No customer card data:</strong> <code>purchase</code> accepts a platform payment ref, not card numbers. Raw customer card data never touches Rosebud's servers, so there is no customer PAN to log, store, or leak.</li>
+  <li><strong>Single-use payments:</strong> payment refs are verified (captured, exact amount) and can never be reused — a reused ref is refused to prevent double-spending.</li>
+  <li><strong>Budget honesty:</strong> search filters on estimated all-in cost, so a $79.99 bouquet is never shown for an $80 total budget when delivery, tax, and the fee would exceed it.</li>
+  <li><strong>Safe default:</strong> the server runs in <code>fake</code> checkout mode unless live mode is explicitly enabled — it cannot place a real order by accident.</li>
+</ul>
+
+<h2>Service fee</h2>
+<p>A flat <strong>$2.99</strong> Rosebud service fee applies per delivery, always shown as its own line item on every quote and order — never buried in the flower price. Because Rosebud is the merchant of record, the fee is simply Rosebud's margin: the customer pays Rosebud the all-in total, Rosebud pays the florist the merchant total, and the $2.99 stays with Rosebud. No separate fee collection is needed.</p>
+
+<h2>Checkout modes</h2>
+<p><code>ROSEBUD_CHECKOUT_MODE</code> (default: <code>fake</code>)</p>
+<ul>
+  <li><strong>fake</strong> — simulated national florist. No network, no real orders. Used for development, demos, and smoke tests. The server can never place a real order in this mode.</li>
+  <li><strong>live</strong> — headless-browser checkout at a real national florist (<code>ROSEBUD_FLORIST=teleflora</code> or <code>1800flowers</code>; requires Playwright + Chromium).</li>
+</ul>
+<div class="note"><strong>Status note:</strong> live-mode adapters are structural scaffolding — selectors are marked for validation against the live sites, and both florists run anti-bot measures (expect CAPTCHAs or blocks). No live purchase has been tested end to end. Do not enable live mode until selectors are verified and a real test purchase + cancellation succeed.</div>
+
+<h2>Example: initialize + call a tool</h2>
+<pre><code>curl https://&lt;your-host&gt;/mcp \
+  -H "Authorization: Bearer $ROSEBUD_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize",
+       "params":{"protocolVersion":"2025-06-18",
+       "capabilities":{},"clientInfo":{"name":"example","version":"1.0"}}}'</code></pre>
+<p>Then <code>notifications/initialized</code>, <code>tools/list</code>, and <code>tools/call</code> with <code>{"name": "search_arrangements", "arguments": {...}}</code>.</p>
+
+<h2>Source &amp; deployment</h2>
+<p>Python (<code>mcp</code> SDK v2, Starlette, uvicorn). Ships with a <code>Dockerfile</code> and a <code>render.yaml</code> Blueprint for one-click hosting on Render; Railway and Fly.io can use the Dockerfile. Set <code>ROSEBUD_API_KEY</code> as an environment variable. Keep <code>ROSEBUD_CHECKOUT_MODE</code> at <code>fake</code> until live checkout is validated.</p>
+
+<h2>Submission status</h2>
+<div class="note">Rosebud is in pre-submission development. Remaining before the connector submission: business entity + Stripe account for Rosebud, confirmed payment routing with the Muse Platform (customer charge → Rosebud's Stripe account, payment ref → purchase), hosted deployment, and live-checkout validation (verified selectors, anti-bot handling, a real test purchase and cancellation). Done 2026-09-20: persistent multi-worker-safe store — set <code>ROSEBUD_STORE=postgres</code> with <code>DATABASE_URL</code> (default <code>memory</code> for dev/fake mode); quotes, payment refs, and refunds are enforced atomically by Postgres.</div>
+
+<footer>
+  Rosebud — send flowers anywhere in the US through a conversation. API documentation for the Muse Platform connector submission.
+</footer>
+
+</div>
+</body>
+</html>
