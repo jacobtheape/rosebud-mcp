@@ -1,0 +1,2 @@
+# rosebud-mcp
+Rosebud MCP
