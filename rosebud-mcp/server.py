@@ -47,6 +47,7 @@ Run:
   uvicorn server:app --host 0.0.0.0 --port 8000
 """
 
+import asyncio
 import os
 import re
 
@@ -461,7 +462,27 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
 
 async def health(request: Request) -> JSONResponse:
-    return JSONResponse({"ok": True, "service": "rosebud-mcp"})
+    info: dict = {"ok": True, "service": "rosebud-mcp"}
+    try:
+        from checkout.storage import _store_mode
+        mode = _store_mode()
+    except Exception:
+        mode = "unknown"
+    info["store"] = mode
+    if mode == "postgres":
+        # Eager connectivity check: the Postgres pool is created lazily on
+        # first tool call, so /health is the honest place to prove the DB is
+        # reachable. No secrets are exposed; only the outcome is reported.
+        try:
+            from checkout.storage import _get_pool
+            pool = await asyncio.wait_for(_get_pool(), timeout=10)
+            async with pool.connection() as conn:
+                await conn.execute("SELECT 1")
+            info["db"] = "ok"
+        except Exception as exc:
+            info["ok"] = False
+            info["db"] = f"error: {type(exc).__name__}"
+    return JSONResponse(info)
 
 
 # Build the MCP app directly (not mounted as a sub-app: its lifespan must run
