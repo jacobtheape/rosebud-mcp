@@ -139,28 +139,41 @@ async def search_arrangements(
     except CheckoutError as e:
         return {"error": str(e)}
     # budget_max is the customer's total spend (flowers + delivery + tax +
-    # the $2.99 Rosebud fee). Adapters pre-filter on product price; apply
-    # the exact all-in check here so no returned option can exceed budget.
-    in_budget = []
-    for o in options:
-        try:
-            delivery_fee, tax = await adapter.quote_details(
-                o.arrangement_id, delivery_zip
-            )
-        except CheckoutError:
-            continue
-        if o.product_price + delivery_fee + tax + SERVICE_FEE <= budget_max + 1e-9:
-            in_budget.append(o)
-    options = in_budget
-    return {
-        "options": [o.to_dict() for o in options],
-        "note": (
+    # the $2.99 Rosebud fee). Adapters that can quote cheaply (fake mode)
+    # get the exact all-in check per option here. Live adapters need a full
+    # checkout walkthrough for exact totals — too slow per search result —
+    # so search pre-filters on product price and get_quote locks the exact
+    # total for the chosen arrangement, which the user approves.
+    if adapter.exact_search_filter:
+        in_budget = []
+        for o in options:
+            try:
+                product_price, delivery_fee, tax = await adapter.quote_details(
+                    o.arrangement_id, delivery_zip, delivery_date, None
+                )
+            except CheckoutError:
+                continue
+            if product_price + delivery_fee + tax + SERVICE_FEE <= budget_max + 1e-9:
+                in_budget.append(o)
+        options = in_budget
+        note = (
             "Prices are the arrangement alone; get_quote adds delivery, "
             "tax, and the $2.99 Rosebud service fee for the exact total."
             if options
             else "No arrangements found within that budget."
-        ),
-    }
+        )
+    else:
+        options = [o for o in options if o.product_price <= budget_max]
+        note = (
+            "Product prices only — get_quote walks the live checkout to "
+            "lock the exact total (delivery + tax + the $2.99 Rosebud "
+            "service fee) before you present it for approval. A chosen "
+            "option can exceed the budget once delivery and tax are added; "
+            "the exact total is what the user approves."
+            if options
+            else "No arrangements found within that budget."
+        )
+    return {"options": [o.to_dict() for o in options], "note": note}
 
 
 @server.tool()
@@ -197,8 +210,22 @@ async def get_quote(
             (o for o in options if o.arrangement_id == arrangement_id), None
         )
         if arrangement is None:
-            return {"error": f"unknown arrangement_id: {arrangement_id}"}
-        delivery_fee, tax = await adapter.quote_details(arrangement_id, zip)
+            # Live mode: allow a direct florist product URL as the
+            # arrangement id (the walkthrough validates it and reads the
+            # exact price). Anything else must come from search.
+            if arrangement_id.startswith("https://www.teleflora.com/"):
+                from checkout.adapters import Arrangement as _Arrangement
+
+                arrangement = _Arrangement(
+                    arrangement_id=arrangement_id,
+                    florist="Teleflora",
+                    name="Teleflora arrangement",
+                    description="",
+                    product_price=0.0,
+                    url=arrangement_id,
+                )
+            else:
+                return {"error": f"unknown arrangement_id: {arrangement_id}"}
     except CheckoutError as e:
         return {"error": str(e)}
     recipient = {
@@ -213,11 +240,23 @@ async def get_quote(
         recipient["phone"] = phone
     if special_instructions:
         recipient["special_instructions"] = special_instructions
+    try:
+        product_price, delivery_fee, tax = await adapter.quote_details(
+            arrangement.arrangement_id, zip, delivery_date, recipient
+        )
+    except CheckoutError as e:
+        return {"error": str(e)}
+    if arrangement.product_price and abs(
+        arrangement.product_price - product_price
+    ) > 0.01:
+        # The listing price moved since search; the walkthrough price is
+        # authoritative.
+        arrangement.product_price = product_price
     quote = await quotes.create(
-        arrangement_id=arrangement_id,
+        arrangement_id=arrangement.arrangement_id,
         florist=arrangement.florist,
         product_name=arrangement.name,
-        product_price=arrangement.product_price,
+        product_price=product_price,
         delivery_fee=delivery_fee,
         tax=tax,
         recipient=recipient,
@@ -305,6 +344,86 @@ async def purchase(
                 f"{payment_record['payment_ref']} is required."
             )
         return {"error": str(e) + refund_note}
+    dry_run = os.environ.get("ROSEBUD_DRY_RUN", "").strip().lower() in (
+        "1", "true", "yes",
+    )
+    merchant_total = round(
+        quote.product_price + quote.delivery_fee + quote.tax, 2
+    )
+    if dry_run:
+        # Trial mode: prove the live florist walkthrough and the total
+        # assertion without placing an order. The quote is NOT claimed
+        # (nothing is charged) and stays valid; the verified customer
+        # payment is refunded immediately since no florist order exists.
+        try:
+            adapter = get_adapter()
+            result = await adapter.checkout(
+                arrangement_id=quote.arrangement_id,
+                recipient=quote.recipient,
+                delivery_date=quote.delivery_date,
+                card_message=quote.card_message,
+                sender_name=quote.sender_name,
+                payment=business_payment,
+                expected_total=merchant_total,
+                dry_run=True,
+            )
+        except CheckoutError as e:
+            try:
+                refund = await refund_customer_payment(
+                    payment_record["payment_ref"],
+                    reason="dry run aborted",
+                )
+                refund_note = (
+                    " Customer payment refunded: "
+                    f"{refund['refund_id']} (${refund['amount']:.2f})."
+                )
+            except CheckoutError as re:
+                refund_note = (
+                    f" REFUND FAILED ({re}) — manual refund of "
+                    f"{payment_record['payment_ref']} is required."
+                )
+            return {"error": "dry run aborted: " + str(e) + refund_note}
+        try:
+            refund = await refund_customer_payment(
+                payment_record["payment_ref"],
+                reason="dry run — no florist order placed",
+            )
+        except CheckoutError as e:
+            return {
+                "error": (
+                    "dry run walked the checkout successfully, but the "
+                    f"customer-payment refund FAILED ({e}) — manual refund "
+                    f"of {payment_record['payment_ref']} is required."
+                ),
+                "live_line_items": result.raw,
+            }
+        return {
+            "dry_run": True,
+            "note": (
+                "Dry run complete: walked the live florist checkout to the "
+                "final review, verified the live merchant total matches "
+                "the approved quote, and did NOT place the order. The "
+                "customer payment was captured and refunded in full; the "
+                "florist was never charged."
+            ),
+            "quote_id": quote_id,
+            "quote_still_valid": True,
+            "line_items": quote.line_items(),
+            "approved_total": quote.total,
+            "live_merchant_total_seen": result.raw.get("live_total"),
+            "live_line_items": result.raw,
+            "refund": {
+                "refund_id": refund["refund_id"],
+                "amount": refund["amount"],
+                "status": refund["status"],
+            },
+            "next": (
+                "Present the live totals to the user for explicit approval. "
+                "For the real purchase: unset ROSEBUD_DRY_RUN, get a fresh "
+                "platform_payment_ref (refs are single-use), and call "
+                "purchase again — the same quote may be reused if unexpired."
+            ),
+        }
     # Claim the quote BEFORE charging the florist, atomically: two
     # concurrent purchases can never charge the florist twice on one
     # quote, even across workers.
@@ -327,9 +446,7 @@ async def purchase(
             "error": "that quote was already used. Get a fresh quote and "
                      "fresh user approval." + refund_note
         }
-    merchant_total = round(
-        quote.product_price + quote.delivery_fee + quote.tax, 2
-    )
+    # merchant_total was computed above (shared by the dry-run branch).
     try:
         adapter = get_adapter()
         result = await adapter.checkout(

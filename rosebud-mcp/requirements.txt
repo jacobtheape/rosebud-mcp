@@ -6,5 +6,5 @@ stripe>=7.0
 # Persistent quote/payment store (ROSEBUD_STORE=postgres, production):
 psycopg[binary]>=3.1
 psycopg-pool>=3.1
-# Live browser checkout only (fake mode, the default, doesn't need it):
-# playwright>=1.40  +  playwright install chromium
+# Live browser checkout (fake mode, the default, doesn't need it):
+playwright>=1.40
