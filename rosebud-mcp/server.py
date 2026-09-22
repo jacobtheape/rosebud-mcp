@@ -52,6 +52,7 @@ import os
 import re
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -605,6 +606,21 @@ async def health(request: Request) -> JSONResponse:
 # Build the MCP app directly (not mounted as a sub-app: its lifespan must run
 # on the served app or the streamable-HTTP task group never initializes),
 # then layer the API-key auth middleware on top.
-app = server.streamable_http_app()
+#
+# NOTE: streamable_http_app() with defaults auto-enables the MCP SDK's
+# DNS-rebinding protection with loopback-only allowed hosts, which rejects
+# every real request (Host: rosebud-mcp.onrender.com) with
+# 421 "Invalid Host header". Allow the deployed hostname(s) explicitly.
+_allowed_hosts = [
+    h.strip()
+    for h in os.environ.get(
+        "ROSEBUD_ALLOWED_HOSTS",
+        "rosebud-mcp.onrender.com,127.0.0.1:*,localhost:*",
+    ).split(",")
+    if h.strip()
+]
+app = server.streamable_http_app(
+    transport_security=TransportSecuritySettings(allowed_hosts=_allowed_hosts),
+)
 app.routes.append(Route("/health", health))
 app.add_middleware(BearerAuthMiddleware)
